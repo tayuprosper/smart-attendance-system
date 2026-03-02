@@ -491,10 +491,15 @@ components:
     TerminalCapabilities:
       description: This defines the type of auth supported by the terminal
       type: object
+      required:
+        - auth_type_id
+        - auth_step
       properties:
         auth_type_id:
           type: integer
           description: reference to the terminal auth types
+        auth_step:
+          type: integer
     TerminalAccessPolicy:
       description: groups/subgroups allowed to auth at this terminal
       type: object
@@ -504,8 +509,6 @@ components:
         subgroup_id:
           type: integer
         auth_type_id:
-          type: integer
-        auth_step:
           type: integer
 
     TerminalCreate:
@@ -823,24 +826,6 @@ paths:
       responses:
         "200":
           description: refresh access token
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/LoginResponse"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
-  /api/v1/auth:
-    post:
-      operationId: authCheck
-      security: []
-      summary: authentication check
-      tags: [Authentication]
-      responses:
-        "200":
-          description: successful login
           content:
             application/json:
               schema:

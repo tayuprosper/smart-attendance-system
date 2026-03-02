@@ -236,7 +236,8 @@ export type TerminalCapabilities = {
     /**
      * reference to the terminal auth types
      */
-    auth_type_id?: number;
+    auth_type_id: number;
+    auth_step: number;
 };
 
 /**
@@ -246,7 +247,6 @@ export type TerminalAccessPolicy = {
     group_id?: number;
     subgroup_id?: number;
     auth_type_id?: number;
-    auth_step?: number;
 };
 
 export type TerminalCreate = Terminal & {
@@ -471,33 +471,6 @@ export type RefreshResponses = {
 };
 
 export type RefreshResponse = RefreshResponses[keyof RefreshResponses];
-
-export type AuthCheckData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/v1/auth';
-};
-
-export type AuthCheckErrors = {
-    /**
-     * Invalid input
-     */
-    400: unknown;
-    /**
-     * Internal server error
-     */
-    500: unknown;
-};
-
-export type AuthCheckResponses = {
-    /**
-     * successful login
-     */
-    200: LoginResponse;
-};
-
-export type AuthCheckResponse = AuthCheckResponses[keyof AuthCheckResponses];
 
 export type ListUsersData = {
     body?: never;

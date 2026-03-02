@@ -222,7 +222,8 @@ export const zTerminalAuthTypes = z.enum([
  * This defines the type of auth supported by the terminal
  */
 export const zTerminalCapabilities = z.object({
-    auth_type_id: z.optional(z.int())
+    auth_type_id: z.int(),
+    auth_step: z.int()
 });
 
 /**
@@ -231,8 +232,7 @@ export const zTerminalCapabilities = z.object({
 export const zTerminalAccessPolicy = z.object({
     group_id: z.optional(z.int()),
     subgroup_id: z.optional(z.int()),
-    auth_type_id: z.optional(z.int()),
-    auth_step: z.optional(z.int())
+    auth_type_id: z.optional(z.int())
 });
 
 export const zTerminalCreate = zTerminal.and(z.object({
@@ -403,17 +403,6 @@ export const zRefreshData = z.object({
  * refresh access token
  */
 export const zRefreshResponse = zLoginResponse;
-
-export const zAuthCheckData = z.object({
-    body: z.optional(z.never()),
-    path: z.optional(z.never()),
-    query: z.optional(z.never())
-});
-
-/**
- * successful login
- */
-export const zAuthCheckResponse = zLoginResponse;
 
 export const zListUsersData = z.object({
     body: z.optional(z.never()),
