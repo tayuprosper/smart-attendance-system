@@ -14,6 +14,8 @@ import { toast } from "react-toastify";
 import apiClient from "@/lib/axiosClient";
 import { WebcamCaptureModalProps } from "@/types";
 
+
+
 export default function WebcamCaptureModal({
   open,
   onClose,
@@ -26,14 +28,13 @@ export default function WebcamCaptureModal({
   const animationRef = useRef<number | null>(null);
 
   const capturedRef = useRef(false);
+  const lastDetectionTime = useRef<number>(0);
 
   const [loadingModels, setLoadingModels] = useState(true);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const DETECTION_INTERVAL = 200; // 5 fps
-
-  const totalCaptures = 10;
 
   /*
    Load face-api models
@@ -112,69 +113,74 @@ export default function WebcamCaptureModal({
   /*
    Capture Image
   */
-  const captureMultiple = async (video: HTMLVideoElement) => {
-  const embeddingsImages: Blob[] = [];
-
-  for (let i = 0; i < totalCaptures; i++) {
-    setFeedback(`Capturing ${i + 1}/${totalCaptures}... Hold still`);
-
+  const capture = async (video: HTMLVideoElement) => {
     const canvas = document.createElement("canvas");
+
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
+    // mirror correction
     ctx.translate(canvas.width, 0);
     ctx.scale(-1, 1);
+
     ctx.drawImage(video, 0, 0);
 
     if (isBlurry(canvas)) {
-      setFeedback("Image blurry. Hold still.");
+      setFeedback("Image is blurry. Please hold still.");
+      capturedRef.current = false;
       return;
     }
 
     if (isTooDark(canvas)) {
-      setFeedback("Lighting too dark.");
+      setFeedback("Lighting is too dark.");
+      capturedRef.current = false;
       return;
     }
 
-    const blob: Blob | null = await new Promise((resolve) =>
-      canvas.toBlob(resolve, "image/jpeg", 0.95)
+    canvas.toBlob(
+      async (blob) => {
+        if (!blob) return;
+
+        const formData = new FormData();
+        formData.append("user_id", String(1));
+        formData.append("image", blob, "face.jpg");
+
+        stopWebcam()
+        onClose()
+        onCaptureStart()
+
+        try {
+          const res = await apiClient.post("verify", formData);
+          console.log(res)
+          if (res.data.verified){
+            onResult(
+              "success",
+              "Verification successfull."
+            );
+          }else{
+            onResult(
+              "error",
+              `Verification failed.`
+            );
+          }
+          console.log(res.data)
+          capturedRef.current = true;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } catch (error: any) {
+          onResult(
+            "error",
+            error.response?.data?.detail || "Verification failed"
+          );
+          capturedRef.current = false;
+        }
+      },
+      "image/jpeg",
+      0.95
     );
-
-    if (blob) embeddingsImages.push(blob);
-
-    // wait 400ms between captures
-    await new Promise((r) => setTimeout(r, 400));
-  }
-
-  const formData = new FormData();
-  formData.append("user_id", String(1));
-
-  embeddingsImages.forEach((img) => {
-    formData.append("images", img);
-  });
-
-  stopWebcam()
-  onClose()
-  onCaptureStart()
-
-  try {
-    await apiClient.post("enroll-face", formData);
-
-    onResult(
-      "success",
-      "Face template successfully registered."
-    );
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } catch (error: any) {
-    onResult(
-      "error",
-      error.response?.data?.detail || "Face Registration failed"
-    );
-  }
-};
+  };
 
   /*
    Detection Loop
@@ -206,18 +212,6 @@ export default function WebcamCaptureModal({
 
   const box = detection.detection.box;
 
-  const faceWidthRatio = box.width / video.videoWidth;
-
-if (faceWidthRatio < 0.25) {
-  setFeedback("Move closer to the camera");
-
-  setTimeout(() => {
-    animationRef.current = requestAnimationFrame(detect);
-  }, DETECTION_INTERVAL);
-
-  return;
-}
-
   const centerX = video.videoWidth / 2;
   const centerY = video.videoHeight / 2;
 
@@ -243,7 +237,7 @@ if (faceWidthRatio < 0.25) {
 
   capturedRef.current = true;
 
-  await captureMultiple(video);
+  await capture(video);
 };
 
   /*
