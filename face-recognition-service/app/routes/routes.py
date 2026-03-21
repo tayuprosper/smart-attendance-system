@@ -2,6 +2,7 @@ import numpy as np
 import cv2
 from deepface import DeepFace
 from fastapi import UploadFile, File, Form, APIRouter, Depends, HTTPException
+import time
 from sqlalchemy.orm import Session
 from app.db.session import SessionLocal
 from app.schemas.user_schema import *
@@ -137,6 +138,7 @@ async def verify_face(
     user_id: int = Form(...),
     image: UploadFile = File(...)
 ):
+    start = time.time()
     contents = await image.read()
     np_img = np.frombuffer(contents, np.uint8)
     img = cv2.imdecode(np_img, cv2.IMREAD_COLOR)
@@ -168,11 +170,13 @@ async def verify_face(
 
     new_embedding = embeddings[0]
 
-    best_user, best_score = find_best_match(new_embedding)
+    for _ in range(100):
+        best_user, best_score = find_best_match(new_embedding)
 
     threshold = 0.6  # stricter threshold
 
     verified = best_score >= threshold
+    print("avg time:", (time.time() - start))
 
     return {
         "verified": verified,
