@@ -1,4 +1,5 @@
 from pydantic import BaseModel
+from typing import Optional
 
 
 class FaceEnrollRequest(BaseModel):
@@ -8,13 +9,21 @@ class FaceEnrollRequest(BaseModel):
 
 class VerifyRequest(BaseModel):
     user_id: int | None = None
+    event_id: int | None = None
     image: str
 
 
 class UserResponse(BaseModel):
-    id: int
-    fname: str
-    lname: str
+    id: Optional[int]
+    groupId: Optional[int]
+    subgroupId: Optional[int]
+    fName: Optional[str]
+    lName: Optional[str]
 
-    class Config:
-        from_attribute = True
+
+class VerifyResponse(BaseModel):
+    verified: bool
+    attendance_status: Optional[str] = None
+    next_step: Optional[str] = None
+    user: Optional[UserResponse] = None
+    attendance_type: Optional[str] = None

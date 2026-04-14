@@ -10,7 +10,6 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { toast } from "react-toastify";
 import apiClient from "@/lib/axiosClient";
 import { WebcamCaptureModalProps } from "@/types";
 
@@ -21,7 +20,12 @@ export default function WebcamCaptureModal({
   onClose,
   onCaptureStart,
   onResult,
+  onFeedback,
   userId,
+  auth_type,
+  terminal_id,
+  auth_type_id,
+  attendance_type
 }: WebcamCaptureModalProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -35,6 +39,8 @@ export default function WebcamCaptureModal({
   const [error, setError] = useState<string | null>(null);
 
   const DETECTION_INTERVAL = 200; // 5 fps
+  
+
 
   /*
    Load face-api models
@@ -73,22 +79,29 @@ export default function WebcamCaptureModal({
   /*
    Blur Detection
   */
-  const isBlurry = (canvas: HTMLCanvasElement) => {
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return true;
+const isBlurry = (canvas: HTMLCanvasElement) => {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return true;
 
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  let sum = 0;
+  let sumSq = 0;
 
-    let sum = 0;
+  for (let i = 0; i < imageData.data.length; i += 4) {
+    const gray =
+      0.299 * imageData.data[i] +
+      0.587 * imageData.data[i + 1] +
+      0.114 * imageData.data[i + 2];
 
-    for (let i = 0; i < imageData.data.length; i += 4) {
-      sum += imageData.data[i];
-    }
+    sum += gray;
+    sumSq += gray * gray;
+  }
 
-    const avg = sum / (imageData.data.length / 4);
+  const n = imageData.data.length / 4;
+  const variance = sumSq / n - (sum / n) ** 2;
 
-    return avg < 50;
-  };
+  return variance < 500; // tweak threshold
+};
 
   /*
    Lighting Check
@@ -129,13 +142,15 @@ export default function WebcamCaptureModal({
     ctx.drawImage(video, 0, 0);
 
     if (isBlurry(canvas)) {
-      setFeedback("Image is blurry. Please hold still.");
+      // setFeedback("Image is blurry. Please hold still.");
+      onFeedback("Image is blurry. Please hold still.");
       capturedRef.current = false;
       return;
     }
 
     if (isTooDark(canvas)) {
-      setFeedback("Lighting is too dark.");
+      // setFeedback("Lighting is too dark.");
+      onFeedback("Lighting is too dark.");
       capturedRef.current = false;
       return;
     }
@@ -145,7 +160,10 @@ export default function WebcamCaptureModal({
         if (!blob) return;
 
         const formData = new FormData();
-        formData.append("user_id", String(1));
+        if (userId) formData.append("user_id", userId.toString());
+        if (auth_type) formData.append("auth_type", auth_type);
+        if (terminal_id) formData.append("terminal_id", terminal_id.toString());
+        if (auth_type_id) formData.append("auth_type_id", auth_type_id.toString());
         formData.append("image", blob, "face.jpg");
 
         stopWebcam()
@@ -155,10 +173,14 @@ export default function WebcamCaptureModal({
         try {
           const res = await apiClient.post("verify", formData);
           console.log(res)
-          if (res.data.verified){
+          if (res.data.verified) {
             onResult(
               "success",
-              "Verification successfull."
+              "Verification successfull.",
+              res.data?.user,
+              res.data?.attendance_status,
+              res.data?.next_step ?? null,
+              res.data?.attendance_type ?? null
             );
           }else{
             onResult(
@@ -170,10 +192,13 @@ export default function WebcamCaptureModal({
           capturedRef.current = true;
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } catch (error: any) {
-          onResult(
-            "error",
-            error.response?.data?.detail || "Verification failed"
-          );
+          const detail = error.response?.data?.detail;
+          // Check if detail is a string or that weird FastAPI array
+          const errorMsg = typeof detail === 'string' 
+            ? detail 
+            : (Array.isArray(detail) ? detail[0].msg : "Verification failed");
+
+          onResult("error", errorMsg);
           capturedRef.current = false;
         }
       },
@@ -201,7 +226,8 @@ export default function WebcamCaptureModal({
     .withFaceLandmarks();
 
   if (!detection) {
-    setFeedback("No face detected.");
+    // setFeedback("No face detected.");
+    onFeedback("No face detected");
 
     setTimeout(() => {
       animationRef.current = requestAnimationFrame(detect);
@@ -212,32 +238,38 @@ export default function WebcamCaptureModal({
 
   const box = detection.detection.box;
 
-  const centerX = video.videoWidth / 2;
-  const centerY = video.videoHeight / 2;
+  // const centerX = video.videoWidth / 2;
+  // const centerY = video.videoHeight / 2;
 
-  const faceX = box.x + box.width / 2;
-  const faceY = box.y + box.height / 2;
+  // const faceX = box.x + box.width / 2;
+  // const faceY = box.y + box.height / 2;
 
-  const offsetX = Math.abs(centerX - faceX);
-  const offsetY = Math.abs(centerY - faceY);
+  // const offsetX = Math.abs(centerX - faceX);
+  // const offsetY = Math.abs(centerY - faceY);
 
-  const threshold = video.videoWidth * 0.15;
+  // const threshold = video.videoWidth * 0.15;
 
-  if (offsetX > threshold || offsetY > threshold) {
-    setFeedback("Center your face.");
+  // if (offsetX > threshold || offsetY > threshold) {
+  //   // setFeedback("Center your face.");
+  //   onFeedback("Center your face")
+  //   setTimeout(() => {
+  //     animationRef.current = requestAnimationFrame(detect);
+  //   }, DETECTION_INTERVAL);
 
-    setTimeout(() => {
-      animationRef.current = requestAnimationFrame(detect);
-    }, DETECTION_INTERVAL);
+  //   return;
+  // }
 
+  // setFeedback("Hold still... capturing");
+  if (box.width < video.videoWidth * 0.2) {
+    onFeedback("Move closer to the camera");
     return;
   }
 
-  setFeedback("Hold still... capturing");
-
   capturedRef.current = true;
 
-  await capture(video);
+  setTimeout(async ()=>{
+    await capture(video);
+  },500)
 };
 
   /*
@@ -279,7 +311,7 @@ export default function WebcamCaptureModal({
   */
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-lg hidden">
         <DialogHeader>
           <DialogTitle>Record Attendance</DialogTitle>
           <DialogDescription>
@@ -297,7 +329,7 @@ export default function WebcamCaptureModal({
               ref={videoRef}
               autoPlay
               playsInline
-              className="w-full h-64 rounded-xl bg-black object-cover"
+              className="hidden"
             />
 
             {feedback && (
