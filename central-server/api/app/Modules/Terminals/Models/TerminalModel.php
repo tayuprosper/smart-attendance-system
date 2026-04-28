@@ -14,6 +14,7 @@ class TerminalModel
     private ?int $branch_id = null;
     private string $status = 'pending'; // Matches ENUM default
     private ?string $date_created = null;
+    private ?string $updated_at = null;
 
     public function __construct()
     {
@@ -30,6 +31,7 @@ class TerminalModel
     public function getBranchId(): ?int { return $this->branch_id; }
     public function getStatus(): string { return $this->status; }
     public function getDateCreated(): ?string { return $this->date_created; }
+    public function getUpdatedAt(): ?string { return $this->updated_at; }
 
     // ==========================================
     // Setters
@@ -57,6 +59,7 @@ class TerminalModel
             $this->status = $status;
         }
     }
+    public function setUpdatedAt(string $val): void { $this->updated_at = $val; }
 
     public function save(array $authCapabilities, array $accessPolicy): bool {
         try{
@@ -108,7 +111,7 @@ class TerminalModel
             // Update the main terminal record
             // We typically don't update activation_code or slug here
             $sql = "UPDATE tbl_terminal 
-                    SET name = ?, slug = ?, branch_id = ?, status = ? 
+                    SET name = ?, slug = ?, branch_id = ?, status = ?, updated_at = ? 
                     WHERE id = ?";
         
             $this->db->query($sql, [
@@ -116,6 +119,7 @@ class TerminalModel
                 $this->getSlug(),
                 $this->getBranchId(),
                 $this->getStatus(),
+                $this->getUpdatedAt(),
                 $this->getId()
             ]);
 
@@ -146,7 +150,7 @@ class TerminalModel
     public function fetch(int $branchId = 0, int $terminalId = 0, string $status = ''): array
     {
         // Build the main Terminal query dynamically
-        $sqlTerminals = "SELECT t.id,t.name,t.slug,t.branch_id,t.status,t.date_created,b.name AS branch FROM tbl_terminal t
+        $sqlTerminals = "SELECT t.*,b.name AS branch FROM tbl_terminal t
                             JOIN tbl_branch b ON t.branch_id = b.id";
         $where = [];
         $params = [];
@@ -278,55 +282,205 @@ class TerminalModel
      * @param int $id
      * @return array|null
      */
-    public function getTerminalData(int $id): ?array
-    {
-        try {
-        //begin transaction
+public function getTerminalData(int $id): ?array
+{
+    try {
         $this->db->beginTransaction();
 
-        // update the terminal status to active
+        // Update status and fetch basic terminal info
         $this->updateStatus('active', (int)$id);
-
         $result = $this->fetch(0, $id);
         
         if (empty($result)) return null;
-
-        $groupIds = [];
-        $subGroupIds = [];
-
         $terminal = $result[0];
 
-        foreach ($terminal["access_policy"] as $policy) {
-            if (!empty($policy["subgroup_id"])) {
-                $subGroupIds[] = $policy["subgroup_id"];
-            } else if (!empty($policy["group_id"])) {
-                $groupIds[] = $policy["group_id"];
+        // Gather ALL users relevant to this terminal (Daily + Event)
+        // We need to fetch Daily Users AND Event Users to make sure no one is missed.
+        $dailyUsers = $this->getUsersByTerminalPolicy($id);
+        $eventUsers = $this->getUsersByEventPolicy($id); // NEW Helper (see below)
+
+        // Merge all users into one unique list (Identities)
+        $uniqueUsers = [];
+        foreach (array_merge($dailyUsers, $eventUsers) as $user) {
+            $uniqueUsers[$user['id']] = $user;
+        }
+
+        // Build the Permissions list
+        $permissions = [];
+        foreach ($uniqueUsers as $userId => $userData) {
+            // Get all contexts (daily/event) for this specific user
+            $userPerms = $this->getUserPermissions($userId, $id);
+            
+            foreach ($userPerms as $perm) {
+                $permissions[] = [
+                    "user_id"    => $userId,
+                    "group_id"   => $perm['group_id'],
+                    "subgroup_id"=> $perm['subgroup_id'],
+                    "context"    => $perm['context'],
+                    "event_id"   => $perm['event_id']
+                ];
             }
         }
 
+        // Extract unique event IDs from the permissions we found
+        $eventIds = array_filter(array_unique(array_column($permissions, 'event_id')));
 
-        // fetch from both sources
-        $groupUsers = $this->getUsersByGroups(array_unique($groupIds)) ?? [];
-        $subGroupUsers = $this->getUsersBySubGroups(array_unique($subGroupIds)) ?? [];
-
-
-        //merge and remove duplicate (in case a user is in both result)
-        $allUsers = array_merge($groupUsers, $subGroupUsers);
-        $uniqueUsers = [];
-        foreach ($allUsers as $user) {
-            $uniqueUsers[$user["id"]] = $user; // keying by ID removes duplicate
-        }
-
+        // Finalize the structure
         $terminal["members"] = array_values($uniqueUsers);
+        $terminal["permissions"] = $permissions;
+        // Fetch full metadata for these events
+        $terminal["events"] = !empty($eventIds) ? $this->getEventsMetadata($eventIds) : [];
 
         $this->db->commit();
-
         return $terminal;
-        } catch (\Throwable $e) { 
-            $this->db->rollback();
-            throw $e;
+
+    } catch (\Throwable $e) { 
+        $this->db->rollback();
+        throw $e;
+    }
+}
+
+private function getUsersByEventPolicy(int $terminalId): array
+{
+    // Find all groups/subgroups associated with this terminal via the Daily Policy
+    // Then find which events are linked to those same groups
+    $sql = "SELECT DISTINCT eap.group_id, eap.subgroup_id 
+            FROM tbl_event_access_policy eap
+            WHERE eap.group_id IN (
+                SELECT group_id FROM tbl_terminal_access_policy WHERE terminal_id = ? AND group_id IS NOT NULL
+            ) OR eap.subgroup_id IN (
+                SELECT subgroup_id FROM tbl_terminal_access_policy WHERE terminal_id = ? AND subgroup_id IS NOT NULL
+            )";
+            
+    $result = $this->db->query($sql, [$terminalId, $terminalId]);
+    
+    $groups = []; 
+    $subgroups = [];
+    
+    if ($result) {
+        while ($row = $result->fetch_assoc()) {
+            if ($row['group_id']) $groups[] = $row['group_id'];
+            if ($row['subgroup_id']) $subgroups[] = $row['subgroup_id'];
         }
     }
+
+    // If no events are linked to these groups, return empty
+    if (empty($groups) && empty($subgroups)) return [];
+
+    $gUsers = !empty($groups) ? $this->getUsersByGroups(array_unique($groups)) : [];
+    $sUsers = !empty($subgroups) ? $this->getUsersBySubGroups(array_unique($subgroups)) : [];
+
+    return array_merge($gUsers, $sUsers);
+}
+
+/**
+ * Fetches all unique users (with biometrics) that have a right to be
+ * on this terminal based on the Daily Access Policy.
+ */
+private function getUsersByTerminalPolicy(int $terminalId): array
+{
+    // 1. Get the Group and Subgroup IDs assigned to this terminal
+    $sqlPolicy = "SELECT group_id, subgroup_id 
+                  FROM tbl_terminal_access_policy 
+                  WHERE terminal_id = ?";
+    
+    $policyResult = $this->db->query($sqlPolicy, [$terminalId]);
+    if (!$policyResult || $policyResult->num_rows === 0) return [];
+
+    $groupIds = [];
+    $subGroupIds = [];
+
+    while ($row = $policyResult->fetch_assoc()) {
+        if ($row['group_id']) $groupIds[] = $row['group_id'];
+        if ($row['subgroup_id']) $subGroupIds[] = $row['subgroup_id'];
+    }
+
+    // 2. Reuse your existing 'Gymnastics' methods to get the users
+    // These methods already handle the Base64 encoding of templates
+    $groupUsers = !empty($groupIds) ? $this->getUsersByGroups(array_unique($groupIds)) : [];
+    $subGroupUsers = !empty($subGroupIds) ? $this->getUsersBySubGroups(array_unique($subGroupIds)) : [];
+
+    // 3. Merge them into a single list unique by User ID
+    $uniqueUsers = [];
+    foreach (array_merge($groupUsers, $subGroupUsers) as $user) {
+        $uniqueUsers[$user['id']] = $user;
+    }
+
+    return array_values($uniqueUsers);
+}
+
+    private function getUserPermissions(int $userId, int $terminalId): array
+{
+    $sql = "
+        -- 1. Check for Daily Context
+        SELECT 
+            gm.group_id, 
+            sgm.subgroup_id, 
+            'daily' as context, 
+            NULL as event_id
+        FROM tbl_user u
+        LEFT JOIN tbl_group_member gm ON u.id = gm.user_id
+        LEFT JOIN tbl_subgroup_member sgm ON u.id = sgm.user_id
+        JOIN tbl_terminal_access_policy tap ON (
+            (tap.group_id = gm.group_id) OR (tap.subgroup_id = sgm.subgroup_id)
+        )
+        WHERE u.id = ? AND tap.terminal_id = ?
+
+        UNION
+
+        -- 2. Check for Event Context
+        SELECT 
+            gm.group_id, 
+            sgm.subgroup_id, 
+            'event' as context, 
+            eap.event_id
+        FROM tbl_user u
+        LEFT JOIN tbl_group_member gm ON u.id = gm.user_id
+        LEFT JOIN tbl_subgroup_member sgm ON u.id = sgm.user_id
+        JOIN tbl_event_access_policy eap ON (
+            (eap.group_id = gm.group_id) OR (eap.subgroup_id = sgm.subgroup_id)
+        )
+        WHERE u.id = ?
+    ";
+
+    $result = $this->db->query($sql, [$userId, $terminalId, $userId]);
+    return $result ? $result->fetch_all(MYSQLI_ASSOC) : [];
+}
+
+private function getEventsMetadata(array $eventIds): array
+{
+    if (empty($eventIds)) return [];
+
+    $events = [];
+    foreach ($eventIds as $eventId) {
+        // 1. Fetch Basic Event Info
+        $sqlEvent = "SELECT * FROM tbl_event WHERE id = ?";
+        $eventReq = $this->db->query($sqlEvent, [$eventId]);
+        $event = $eventReq ? $eventReq->fetch_assoc() : null;
+
+        if ($event) {
+            // 2. Nest the Access Policy (So terminal knows which groups/auth types apply)
+            $sqlPolicy = "SELECT ev.group_id, ev.subgroup_id, ev.auth_type_id, at.name as auth_type_name
+                          FROM tbl_event_access_policy ev
+                          LEFT JOIN lkup_auth_type at ON ev.auth_type_id = at.id
+                          WHERE event_id = ?";
+            $policyReq = $this->db->query($sqlPolicy, [$eventId]);
+            $event['access_policy'] = $policyReq ? $policyReq->fetch_all(MYSQLI_ASSOC) : [];
+
+            // 3. Nest the Check-in/Out Ranges
+            $sqlRange = "SELECT checkin_start_datetime, checkin_end_datetime, 
+                                checkout_start_datetime, checkout_end_datetime 
+                         FROM tbl_event_checkin_checkout_range WHERE event_id = ?";
+            $rangeReq = $this->db->query($sqlRange, [$eventId]);
+            // Use fetch_assoc because there is usually only one range per event
+            $event['checkinout_range'] = $rangeReq ? $rangeReq->fetch_assoc() : null;
+
+            $events[] = $event;
+        }
+    }
+
+    return $events;
+}
 
     /**
      * Get active users by an array of group ids
@@ -341,7 +495,7 @@ class TerminalModel
         $placeholders = implode(",", array_fill(0, count($cleanIds), "?"));
 
         $sql = "SELECT gm.group_id, NULL AS subgroup_id, u.id, u.fname, u.lname,
-                    u.gender, u.user_type, b.face_template,
+                    u.gender, u.user_type, u.created_at, u.updated_at, b.face_template,
                     b.fingerprint_template, b.card_serial_code
                 FROM tbl_group_member gm
                 JOIN tbl_user u ON gm.user_id = u.id
@@ -375,7 +529,7 @@ class TerminalModel
 
         // 3. The Query (Fixed JOIN to LEFT JOIN and corrected 'group_id' typo)
         $sql = "SELECT sgm.subgroup_id, NULL AS group_id, u.id, u.fname, u.lname,
-                    u.gender, u.user_type, b.face_template,
+                    u.gender, u.user_type,u.created_at, u.updated_at, b.face_template,
                     b.fingerprint_template, b.card_serial_code
                 FROM tbl_subgroup_member sgm
                 JOIN tbl_user u ON sgm.user_id = u.id
@@ -471,4 +625,5 @@ class TerminalModel
         $sql = "INSERT INTO tbl_terminal_access_policy (terminal_id, group_id, subgroup_id, auth_type_id) VALUES " . implode(',', $placeholders);
         $this->db->query($sql, $params);
     }
+
 }

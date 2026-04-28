@@ -7,6 +7,9 @@ use App\Middleware\AuthMiddleware;
 use App\Modules\Branch\Controllers\BranchController;
 use App\Modules\Groups\Controllers\GroupController;
 use App\Modules\Terminals\Controllers\TerminalController;
+use App\Modules\Events\Controllers\EventsController;
+
+use App\Modules\Sync\Controller\SyncController;
 
 /*
 |--------------------------
@@ -19,6 +22,12 @@ $router->post('/api/v1/auth/login', [AuthController::class, 'login']);
 $router->post('/api/v1/auth/logout', [AuthController::class, 'logout']);
 $router->post('/api/v1/auth/refresh', [AuthMiddleware::class, 'attempRefresh']);
 
+/*
+|--------------------------
+|  Sync Routes
+|--------------------------
+*/
+$router->get('/api/v1/sync/updates', [SyncController::class, 'index']);
 
 /*
 |--------------------------
@@ -31,6 +40,11 @@ $router->get('/api/v1/terminal', [TerminalController::class, 'index']);
 $router->delete('/api/v1/terminal/{id}', [TerminalController::class, 'delete']);
 
 $router->post('/api/v1/terminal/activate', [TerminalController::class, 'activate']);
+
+$router->post('/api/v1/event', [EventsController::class, 'store']);
+$router->put('/api/v1/event', [EventsController::class, 'edit']);
+$router->get('/api/v1/event', [EventsController::class, 'index']);
+$router->delete('/api/v1/event/{id}', [EventsController::class, 'delete']);
 
 
 
